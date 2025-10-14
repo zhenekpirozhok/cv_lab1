@@ -58,7 +58,6 @@ def setup_ui(editor):
     buttons_row5 = [
         ("Hough Линии", HoughLinesCommand),
         ("Hough Круги", HoughCirclesCommand),
-        ("Hough Круги (Авто)", HoughCirclesAutoCommand)
     ]
     for col, (text, cmd_class) in enumerate(buttons_row5):
         btn = tk.Button(btn_frame, text=text, command=lambda c=cmd_class: editor.apply_command(c(editor)), width=18)

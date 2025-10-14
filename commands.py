@@ -279,72 +279,6 @@ class HoughCirclesCommand(ParamCommand):
         self.editor.displayed_img = Image.fromarray(img_hough)
         self.editor.show_image(self.editor.displayed_img)
 
-class HoughCirclesAutoCommand(ParamCommand):
-    params = {
-        'canny_thresh1': (int, 50, "Введите первый порог для Canny:"),
-        'canny_thresh2': (int, 150, "Введите второй порог для Canny:"),
-        'dp': (float, 1.0, "Введите масштаб аккумулятора (dp):"),
-        'param1': (float, 80, "Введите порог для внутреннего Canny (param1):"),
-        'param2': (float, 30, "Введите порог голосов (param2):")
-    }
-
-    def execute_with_params(self, canny_thresh1, canny_thresh2, dp, param1, param2):
-        img_np = np.array(self.editor.displayed_img)
-
-        # 1. Canny + размытие
-        edges = cv2.Canny(img_np, canny_thresh1, canny_thresh2)
-        edges_blur = cv2.GaussianBlur(edges, (5, 5), 0)
-
-        # 2. Получаем координаты границ
-        ys, xs = np.nonzero(edges_blur)
-        if len(xs) < 5:  # слишком мало границ, выходим
-            self.editor.show_image(self.editor.displayed_img)
-            return
-
-        # 3. Автоматический minDist
-        coords = np.column_stack((xs, ys))
-        # берем случайные 200 точек для скорости
-        sample_indices = np.linspace(0, len(coords)-1, min(200, len(coords))).astype(int)
-        coords_sample = coords[sample_indices]
-
-        # простое приближение: среднее расстояние до ближайшего соседа
-        dists = []
-        for i, (x0, y0) in enumerate(coords_sample):
-            others = np.delete(coords_sample, i, axis=0)
-            dist = np.min(np.sqrt((others[:,0]-x0)**2 + (others[:,1]-y0)**2))
-            dists.append(dist)
-        min_dist = max(5, int(np.mean(dists)))
-
-        # 4. Авто-подбор радиусов
-        width = img_np.shape[1]
-        height = img_np.shape[0]
-        min_radius = max(5, int(0.03 * min(width, height)))
-        max_radius = max(10, int(0.15 * max(width, height)))
-
-        # 5. Поиск окружностей
-        circles = cv2.HoughCircles(
-            edges_blur,
-            cv2.HOUGH_GRADIENT,
-            dp=dp,
-            minDist=min_dist,
-            param1=param1,
-            param2=param2,
-            minRadius=min_radius,
-            maxRadius=max_radius
-        )
-
-        img_hough = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR) if img_np.ndim == 2 else img_np.copy()
-
-        if circles is not None:
-            circles = np.uint16(np.around(circles))
-            for c in circles[0, :]:
-                center = (c[0], c[1])
-                radius = c[2]
-                cv2.circle(img_hough, center, radius, (0, 255, 0), 2)
-                cv2.circle(img_hough, center, 2, (0, 0, 255), 3)
-
-        self.editor.displayed_img = Image.fromarray(img_hough)
-        self.editor.show_image(self.editor.displayed_img)
 
 class LocalStatsCommand(ParamCommand):
     params = {
@@ -383,37 +317,25 @@ class RegionGrowCommand(ParamCommand):
         else:
             gray = img_np
 
-        # Окно для выбора точки
-        window = tk.Toplevel(self.editor.root)
-        window.title("Выбор точки затравки")
-
-        # Конвертируем в RGB для отображения
-        img_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
-        img_pil = Image.fromarray(img_rgb)
-        tk_img = self.editor.pil_to_tk(img_pil)
-        label = tk.Label(window, image=tk_img)
-        label.image = tk_img
-        label.pack()
-
         seed = {'x': None, 'y': None}
+        label = self.editor.image_label
+
+        messagebox.showinfo("Инфо", "Кликните по изображению, чтобы выбрать точку затравки.")
 
         def on_click(event):
+            # Получаем координаты клика относительно изображения
             seed['x'], seed['y'] = event.x, event.y
-            window.destroy()
+            label.unbind("<Button-1>")  # отключаем обработчик после клика
+            self.region_grow(gray, seed['x'], seed['y'], tolerance)
 
         label.bind("<Button-1>", on_click)
-        window.wait_window()
 
-        if seed['x'] is None:
-            messagebox.showinfo("Инфо", "Точка не выбрана.")
-            return
-
-        # Region growing (простая рекурсивная версия с очередью)
+    def region_grow(self, gray, seed_x, seed_y, tolerance):
         h, w = gray.shape
         mask = np.zeros_like(gray, dtype=np.uint8)
-        seed_value = gray[seed['y'], seed['x']]
-        stack = [(seed['x'], seed['y'])]
-        mask[seed['y'], seed['x']] = 255
+        seed_value = gray[seed_y, seed_x]
+        stack = [(seed_x, seed_y)]
+        mask[seed_y, seed_x] = 255
 
         while stack:
             x, y = stack.pop()
