@@ -1,4 +1,6 @@
 from tkinter import simpledialog
+import tkinter as tk
+from tkinter import messagebox
 import numpy as np
 from PIL import Image
 import cv2
@@ -196,4 +198,236 @@ class RotateCommand(ParamCommand):
         M = cv2.getRotationMatrix2D(center, angle, scale)
         rotated = cv2.warpAffine(img_np, M, (w, h))
         self.editor.displayed_img = Image.fromarray(rotated)
+        self.editor.show_image(self.editor.displayed_img)
+
+class HoughLinesCommand(ParamCommand):
+    params = {
+        'rho': (float, 1, "Введите разрешение по расстоянию (rho):"),
+        'theta_deg': (float, 1, "Введите разрешение по углу (градусы):"),
+        'threshold': (int, 120, "Введите порог голосов:"),
+        'min_line_length': (int, 50, "Введите минимальную длину линии:"),
+        'max_line_gap': (int, 1, "Введите максимальный разрыв линии:")
+    }
+
+    def execute_with_params(self, rho, theta_deg, threshold, min_line_length, max_line_gap):
+        img_np = np.array(self.editor.displayed_img)
+
+        # Порог для выделения границ
+        _, edges = cv2.threshold(img_np, 50, 255, cv2.THRESH_BINARY)
+
+        # Поиск линий
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=rho,
+            theta=np.deg2rad(theta_deg),
+            threshold=threshold,
+            minLineLength=min_line_length,
+            maxLineGap=max_line_gap
+        )
+
+        # Копия для рисования
+        img_hough = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR) if img_np.ndim == 2 else img_np.copy()
+
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                cv2.line(img_hough, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+        self.editor.displayed_img = Image.fromarray(img_hough)
+        self.editor.show_image(self.editor.displayed_img)
+
+
+class HoughCirclesCommand(ParamCommand):
+    params = {
+        'dp': (float, 1.0, "Введите масштаб аккумулятора (dp):"),
+        'min_dist': (float, 30, "Введите минимальное расстояние между центрами:"),
+        'param1': (float, 80, "Введите порог для Canny (param1):"),
+        'param2': (float, 50, "Введите порог голосов (param2):"),
+        'min_radius': (int, 20, "Введите минимальный радиус:"),
+        'max_radius': (int, 40, "Введите максимальный радиус:")
+    }
+
+    def execute_with_params(self, dp, min_dist, param1, param2, min_radius, max_radius):
+        img_np = np.array(self.editor.displayed_img)
+
+        # Используем изображение как есть, предполагаем, что оно уже подготовлено
+        img_to_use = img_np
+
+        # Поиск окружностей
+        circles = cv2.HoughCircles(
+            img_to_use,
+            cv2.HOUGH_GRADIENT,
+            dp=dp,
+            minDist=min_dist,
+            param1=param1,
+            param2=param2,
+            minRadius=min_radius,
+            maxRadius=max_radius
+        )
+
+      
+        img_hough = cv2.cvtColor(img_to_use, cv2.COLOR_GRAY2BGR) if img_to_use.ndim == 2 else img_to_use.copy()
+
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            for c in circles[0, :]:
+                center = (c[0], c[1])
+                radius = c[2]
+                cv2.circle(img_hough, center, radius, (0, 255, 0), 2)
+                cv2.circle(img_hough, center, 2, (0, 0, 255), 3)
+
+        self.editor.displayed_img = Image.fromarray(img_hough)
+        self.editor.show_image(self.editor.displayed_img)
+
+class HoughCirclesAutoCommand(ParamCommand):
+    params = {
+        'canny_thresh1': (int, 50, "Введите первый порог для Canny:"),
+        'canny_thresh2': (int, 150, "Введите второй порог для Canny:"),
+        'dp': (float, 1.0, "Введите масштаб аккумулятора (dp):"),
+        'param1': (float, 80, "Введите порог для внутреннего Canny (param1):"),
+        'param2': (float, 30, "Введите порог голосов (param2):")
+    }
+
+    def execute_with_params(self, canny_thresh1, canny_thresh2, dp, param1, param2):
+        img_np = np.array(self.editor.displayed_img)
+
+        # 1. Canny + размытие
+        edges = cv2.Canny(img_np, canny_thresh1, canny_thresh2)
+        edges_blur = cv2.GaussianBlur(edges, (5, 5), 0)
+
+        # 2. Получаем координаты границ
+        ys, xs = np.nonzero(edges_blur)
+        if len(xs) < 5:  # слишком мало границ, выходим
+            self.editor.show_image(self.editor.displayed_img)
+            return
+
+        # 3. Автоматический minDist
+        coords = np.column_stack((xs, ys))
+        # берем случайные 200 точек для скорости
+        sample_indices = np.linspace(0, len(coords)-1, min(200, len(coords))).astype(int)
+        coords_sample = coords[sample_indices]
+
+        # простое приближение: среднее расстояние до ближайшего соседа
+        dists = []
+        for i, (x0, y0) in enumerate(coords_sample):
+            others = np.delete(coords_sample, i, axis=0)
+            dist = np.min(np.sqrt((others[:,0]-x0)**2 + (others[:,1]-y0)**2))
+            dists.append(dist)
+        min_dist = max(5, int(np.mean(dists)))
+
+        # 4. Авто-подбор радиусов
+        width = img_np.shape[1]
+        height = img_np.shape[0]
+        min_radius = max(5, int(0.03 * min(width, height)))
+        max_radius = max(10, int(0.15 * max(width, height)))
+
+        # 5. Поиск окружностей
+        circles = cv2.HoughCircles(
+            edges_blur,
+            cv2.HOUGH_GRADIENT,
+            dp=dp,
+            minDist=min_dist,
+            param1=param1,
+            param2=param2,
+            minRadius=min_radius,
+            maxRadius=max_radius
+        )
+
+        img_hough = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR) if img_np.ndim == 2 else img_np.copy()
+
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            for c in circles[0, :]:
+                center = (c[0], c[1])
+                radius = c[2]
+                cv2.circle(img_hough, center, radius, (0, 255, 0), 2)
+                cv2.circle(img_hough, center, 2, (0, 0, 255), 3)
+
+        self.editor.displayed_img = Image.fromarray(img_hough)
+        self.editor.show_image(self.editor.displayed_img)
+
+class LocalStatsCommand(ParamCommand):
+    params = {
+        'window_size': (int, 7, "Введите размер окна (нечетное число):"),
+    }
+
+    def execute_with_params(self, window_size):
+        if window_size % 2 == 0:
+            window_size += 1
+
+        img_np = np.array(self.editor.displayed_img)
+        if img_np.ndim == 3:
+            img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        else:
+            img_gray = img_np
+
+        # Считаем локальную дисперсию
+        mean = cv2.blur(img_gray.astype(np.float32), (window_size, window_size))
+        mean_sq = cv2.blur(img_gray.astype(np.float32)**2, (window_size, window_size))
+        variance = mean_sq - mean**2
+        variance = cv2.normalize(variance, None, 0, 255, cv2.NORM_MINMAX)
+
+        self.editor.displayed_img = Image.fromarray(variance.astype(np.uint8))
+        self.editor.show_image(self.editor.displayed_img)
+
+
+class RegionGrowCommand(ParamCommand):
+    params = {
+        'tolerance': (int, 15, "Введите допуск (разброс яркости):")
+    }
+
+    def execute_with_params(self, tolerance):
+        img_np = np.array(self.editor.displayed_img)
+        if img_np.ndim == 3:
+            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = img_np
+
+        # Окно для выбора точки
+        window = tk.Toplevel(self.editor.root)
+        window.title("Выбор точки затравки")
+
+        # Конвертируем в RGB для отображения
+        img_rgb = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        img_pil = Image.fromarray(img_rgb)
+        tk_img = self.editor.pil_to_tk(img_pil)
+        label = tk.Label(window, image=tk_img)
+        label.image = tk_img
+        label.pack()
+
+        seed = {'x': None, 'y': None}
+
+        def on_click(event):
+            seed['x'], seed['y'] = event.x, event.y
+            window.destroy()
+
+        label.bind("<Button-1>", on_click)
+        window.wait_window()
+
+        if seed['x'] is None:
+            messagebox.showinfo("Инфо", "Точка не выбрана.")
+            return
+
+        # Region growing (простая рекурсивная версия с очередью)
+        h, w = gray.shape
+        mask = np.zeros_like(gray, dtype=np.uint8)
+        seed_value = gray[seed['y'], seed['x']]
+        stack = [(seed['x'], seed['y'])]
+        mask[seed['y'], seed['x']] = 255
+
+        while stack:
+            x, y = stack.pop()
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h and mask[ny, nx] == 0:
+                        if abs(int(gray[ny, nx]) - int(seed_value)) <= tolerance:
+                            mask[ny, nx] = 255
+                            stack.append((nx, ny))
+
+        # Наложим результат на исходное изображение
+        result = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        result[mask == 255] = [0, 255, 0]  # выделение области зелёным
+
+        self.editor.displayed_img = Image.fromarray(result)
         self.editor.show_image(self.editor.displayed_img)
