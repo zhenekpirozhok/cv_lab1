@@ -66,8 +66,36 @@ def setup_ui(editor):
     # --- Локальные признаки и сегментация ---
     buttons_row6 = [
         ("Локальные признаки", LocalStatsCommand),
-        ("Сегментация (по клику)", RegionGrowCommand)
+        ("Сегментация (по клику)", RegionGrowCommand),
+        ("Поиск времени на изображении", RecognizeTimeCommand),
     ]
     for col, (text, cmd_class) in enumerate(buttons_row6):
         btn = tk.Button(btn_frame, text=text, command=lambda c=cmd_class: editor.apply_command(c(editor)), width=18, bg="lightblue")
         btn.grid(row=5, column=col, padx=5, pady=5)
+
+
+    # --- Пошаговое распознавание времени ---
+    def start_recognize_time():
+        editor.step_command = RecognizeTimeCommand(editor)
+        editor.step_command.start()
+
+    def next_step_recognize_time():
+        if hasattr(editor, 'step_command'):
+            editor.step_command.next_step()
+        else:
+            messagebox.showinfo("Инфо", "Сначала нажмите 'Начать распознавание времени'")
+
+    buttons_row6 = [
+        ("Локальные признаки", LocalStatsCommand),
+        ("Сегментация (по клику)", RegionGrowCommand),
+    ]
+    for col, (text, cmd_class) in enumerate(buttons_row6):
+        btn = tk.Button(btn_frame, text=text, command=lambda c=cmd_class: editor.apply_command(c(editor)), width=18, bg="lightblue")
+        btn.grid(row=5, column=col, padx=5, pady=5)
+
+    # Кнопки для времени
+    btn_start_time = tk.Button(btn_frame, text="Начать распознавание времени", command=start_recognize_time, width=18, bg="lightgreen")
+    btn_start_time.grid(row=5, column=2, padx=5, pady=5)
+
+    btn_next_step = tk.Button(btn_frame, text="Следующий шаг", command=next_step_recognize_time, width=18, bg="orange")
+    btn_next_step.grid(row=5, column=3, padx=5, pady=5)
