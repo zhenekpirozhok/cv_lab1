@@ -1,5 +1,6 @@
 import tkinter as tk
 from commands import *
+from detect_time import RecognizeTimeCommand
 
 def setup_ui(editor):
     root = editor.root

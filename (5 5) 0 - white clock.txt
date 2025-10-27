@@ -1,0 +1,4 @@
+(5 5) 0, 54 - white clock
+(17 17) 0.8, 45  - black clock
+(13 13) 0, 105 - second white clock
+
