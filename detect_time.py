@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 import math
 from PIL import Image
-from tkinter import messagebox
-from commands import Command, GaussianBlurCommand, GrayscaleHSVCommand  # если у тебя базовый класс лежит в base_command.py
+from tkinter import messagebox, simpledialog
+from commands import Command, GaussianBlurCommand, GrayscaleHSVCommand, RotateCommand  # ✅ добавили RotateCommand
 
 class RecognizeTimeCommand(Command):
     """
@@ -107,7 +107,7 @@ class RecognizeTimeCommand(Command):
             print("Недостаточно точек для эллипса.")
 
     def step_perspective(self):
-        """4. Перспективное выравнивание и вращение."""
+        """4. Перспективное выравнивание и вращение (через RotateCommand)."""
         if self.ellipse is None:
             print("Эллипс не найден.")
             return
@@ -136,10 +136,23 @@ class RecognizeTimeCommand(Command):
             [size//2, size-1]
         ], dtype="float32")
 
+        # Перспективное выравнивание
         M = cv2.getPerspectiveTransform(src_pts, dst_pts)
         warped = cv2.warpPerspective(self.result, M, (size, size))
         warped = cv2.flip(warped, 1)
-        self.show_intermediate(warped, "Rotated")
+
+        # Отобразить результат перед вращением
+        self.result = warped
+        self.show_intermediate(warped, "Perspective warped")
+
+        # ✅ Применить вращение через твою команду RotateCommand (с UI для ввода параметров)
+        rotate_cmd = RotateCommand(self.editor)
+        rotate_cmd.execute()  # автоматически спросит угол и масштаб
+
+        # Обновляем результат из редактора
+        self.result = np.array(self.editor.displayed_img)
+        self.show_intermediate(self.result, "After RotateCommand")
+
 
     def step_detect_lines(self):
         """5. Поиск стрелок (HoughLinesP)."""
@@ -189,7 +202,7 @@ class RecognizeTimeCommand(Command):
         self.show_intermediate(output, "Detected Clock Hands")
 
     def step_calculate_time(self):
-        """6. Расчёт времени по углам стрелок."""
+        """6. Расчёт времени по углам стрелок и вывод на изображение."""
         if not self.filtered_lines:
             print("Стрелки не найдены.")
             return
@@ -210,20 +223,35 @@ class RecognizeTimeCommand(Command):
             angle_from_12 = (90 - angle) % 360
             hand_angles.append({'angle': angle_from_12, 'length': max(dist1, dist2)})
 
+        # сортируем стрелки по длине
         hand_angles = sorted(hand_angles, key=lambda x: x['length'], reverse=True)
+
         if len(hand_angles) >= 2:
             minute = int(round(hand_angles[0]['angle'] / 6)) % 60
             hour = int(round(hand_angles[1]['angle'] / 30)) % 12
-            messagebox.showinfo("Распознанное время", f"{hour}:{minute:02d}")
-            print(f"Detected time: {hour}:{minute:02d}")
+
+            # 👇 добавляем время на изображение
+            output = self.result.copy()
+            detected_time = f"{hour}:{minute:02d}"
+
+            cv2.putText(
+                output,
+                detected_time,
+                (20, 380),  # координаты текста
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.2,             # размер шрифта
+                (0, 255, 0),     # зелёный цвет
+                3,               # толщина линий
+                cv2.LINE_AA
+            )
+
+            # показываем финальный результат
+            self.result = output
+            self.show_intermediate(output, f"Detected time: {detected_time}")
+
+            # также выводим в окно
+            messagebox.showinfo("Распознанное время", detected_time)
+            print(f"Detected time: {detected_time}")
+
         else:
             print("Недостаточно стрелок для определения времени.")
-
-    # =====================
-    # Вспомогательные функции
-    # =====================
-    def rotate_image(self, image, angle):
-        h, w = image.shape[:2]
-        center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        return cv2.warpAffine(image, M, (w, h))
