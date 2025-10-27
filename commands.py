@@ -419,16 +419,39 @@ class RecognizeTimeCommand(Command):
         self.show_intermediate(cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR), "Границы (Canny)")
 
     def detect_all_lines(self):
-        lines = cv2.HoughLinesP(
-            self.edges, 1, np.pi/180, threshold=30,
-            minLineLength=self.r//4, maxLineGap=10
-        )
-        self.lines = lines
-        all_lines_img = self.result.copy()
-        if lines is not None:
-            for x1, y1, x2, y2 in lines[:,0]:
-                cv2.line(all_lines_img, (x1, y1), (x2, y2), (0, 255, 255), 3)  # толщина = 3
-        self.show_intermediate(all_lines_img, "Все найденные линии")
+            # 1. Создание пустой маски
+            mask = np.zeros_like(self.gray)
+            
+            # 2. Рисование белого круга (циферблата) на маске
+            # (self.cx, self.cy) - центр, self.r - радиус
+            cv2.circle(mask, (self.cx, self.cy), self.r, 255, -1)
+            
+            # 3. Применение маски к границам Canny
+            # В self.edges_masked останутся только границы, которые находятся внутри круга
+            self.edges_masked = cv2.bitwise_and(self.edges, self.edges, mask=mask)
+            
+            # 4. Обнаружение линий Хафа только на маскированном изображении
+            # Параметры можно немного ослабить (например, threshold=25) для нахождения большего количества линий
+            lines = cv2.HoughLinesP(
+                self.edges_masked,  # Используем маскированные границы
+                1, np.pi/180, 
+                threshold=25,       # Немного уменьшен для нахождения больше линий
+                minLineLength=self.r//5, # Чуть уменьшено для большей чувствительности
+                maxLineGap=15        # Чуть увеличено
+            )
+            
+            self.lines = lines
+            all_lines_img = self.result.copy()
+            
+            if lines is not None:
+                for x1, y1, x2, y2 in lines[:,0]:
+                    # Рисуем найденные линии
+                    cv2.line(all_lines_img, (x1, y1), (x2, y2), (0, 255, 255), 3)  # толщина = 3
+                    
+            # Рисуем границу циферблата для контекста
+            cv2.circle(all_lines_img, (self.cx, self.cy), self.r, (0, 0, 255), 1)
+
+            self.show_intermediate(all_lines_img, f"Все найденные линии (внутри циферблата): {len(lines) if lines is not None else 0}")
 
 
     def select_hands(self):
@@ -460,78 +483,94 @@ class RecognizeTimeCommand(Command):
 
 
     def compute_angles(self):
-        def tip(x1, y1, x2, y2):
-            """Возвращает координаты кончика (точка, более далёкая от центра циферблата)."""
-            d1 = np.hypot(x1 - self.cx, y1 - self.cy)
-            d2 = np.hypot(x2 - self.cx, y2 - self.cy)
-            return (x2, y2) if d2 > d1 else (x1, y1)
+            # Вспомогательные функции (могут быть вынесены в класс для чистоты)
+            def tip(x1, y1, x2, y2):
+                """Возвращает координаты кончика (точка, более далёкая от центра циферблата)."""
+                d1 = np.hypot(x1 - self.cx, y1 - self.cy)
+                d2 = np.hypot(x2 - self.cx, y2 - self.cy)
+                return (x2, y2) if d2 > d1 else (x1, y1)
 
-        def angle_from_center(line):
-            """
-            Возвращает угол в градусах:
-            0° = вверх (12 часов), по часовой стрелке: право=90°, низ=180°, лево=270°.
-            """
-            x1, y1, x2, y2, *_ = line
-            x_tip, y_tip = tip(x1, y1, x2, y2)
-            dx = x_tip - self.cx
-            dy = self.cy - y_tip  # инвертируем ось Y (в изображениях Y растёт вниз)
-            return (np.degrees(np.arctan2(dx, dy)) % 360)
+            def angle_from_center(line):
+                """
+                Возвращает угол в градусах [0, 360):
+                0° = вверх (12 часов), по часовой стрелке.
+                """
+                x1, y1, x2, y2, *_ = line
+                x_tip, y_tip = tip(x1, y1, x2, y2)
+                dx = x_tip - self.cx
+                dy = self.cy - y_tip  # инвертируем ось Y (в изображениях Y растёт вниз)
+                return (np.degrees(np.arctan2(dx, dy)) % 360)
 
-        def length(line):
-            x1, y1, x2, y2, *_ = line
-            return np.hypot(x2 - x1, y2 - y1)
+            # --- 1) Получаем углы двух линий ---
+            # Предполагаем, что self.minute_line/self.hour_line уже отсортированы по длине (a1 - длиннее)
+            a1 = angle_from_center(self.minute_line)
+            a2 = angle_from_center(self.hour_line)
+            
+            # --- 2) Проверка двух гипотез для надежной идентификации стрелок ---
+            
+            # Гипотеза A: A1 - минутная, A2 - часовая (соответствует длине)
+            M_A = int(round(a1 / 6.0)) % 60
+            H_raw_A = (a2 - 0.5 * M_A) / 30.0
+            H_A = int(round(H_raw_A)) % 12
+            
+            # Идеальный угол, соответствующий (H_A:M_A)
+            A1_ideal = M_A * 6.0
+            A2_ideal = (H_A * 30.0 + M_A * 0.5) % 360
+            
+            # Ошибка Гипотезы A: сумма абсолютных разниц
+            Error_A = np.abs((a1 - A1_ideal + 180) % 360 - 180) + np.abs((a2 - A2_ideal + 180) % 360 - 180)
 
-        # --- 1) Получаем углы двух линий ---
-        a1 = angle_from_center(self.minute_line)
-        a2 = angle_from_center(self.hour_line)
+            # Гипотеза B: A2 - минутная, A1 - часовая (игнорируем длину)
+            M_B = int(round(a2 / 6.0)) % 60
+            H_raw_B = (a1 - 0.5 * M_B) / 30.0
+            H_B = int(round(H_raw_B)) % 12
+            
+            # Идеальный угол, соответствующий (H_B:M_B)
+            A2_ideal = M_B * 6.0
+            A1_ideal = (H_B * 30.0 + M_B * 0.5) % 360
 
-        # --- 2) Подстраховка: определим какая стрелка минутная/часовая ---
-        # Обычно минутная длиннее. Если у вас уже гарантировано разделение
-        # на self.minute_line / self.hour_line — этот блок всё равно не повредит.
-        len1 = length(self.minute_line)
-        len2 = length(self.hour_line)
+            # Ошибка Гипотезы B:
+            Error_B = np.abs((a2 - A2_ideal + 180) % 360 - 180) + np.abs((a1 - A1_ideal + 180) % 360 - 180)
+            
+            # Выбираем наименьшую ошибку
+            if Error_A <= Error_B:
+                # Гипотеза А верна: a1 - минутная, a2 - часовая
+                self.minute_angle = a1
+                self.hour_angle = a2
+                self.minute = M_A
+                self.hour = H_A
+            else:
+                # Гипотеза В верна: a2 - минутная, a1 - часовая (стрелки были перепутаны по длине)
+                self.minute_angle = a2
+                self.hour_angle = a1
+                self.minute = M_B
+                self.hour = H_B
+                # Обмен местами ссылок на линии (для корректной визуализации)
+                self.minute_line, self.hour_line = self.hour_line, self.minute_line
+            
+            # --- 3) Финальная Нормализация Времени ---
+            
+            # Нормализация часа: 0 соответствует 12 часам.
+            if self.hour == 0:
+                self.hour = 12
+            
+            # --- 4) Сообщение пользователю ---
+            
+            # Убедимся, что для сообщения 0 часов не выводится
+            display_hour = 12 if self.hour == 0 else self.hour
 
-        if len2 > len1:
-            # Похоже, self.hour_line на самом деле длиннее — вероятно это минутная.
-            minute_angle, hour_angle = a2, a1
-        else:
-            minute_angle, hour_angle = a1, a2
-
-        # --- 3) Вычисляем минуты из минутной стрелки ---
-        # Минуты кратны 6°. Округляем к ближайшей минуте.
-        minute = int(round(minute_angle / 6.0)) % 60
-
-        # Если из-за округления получили 60, нормализуем к 0 и потом прибавим к часу.
-        minute_carry = 1 if minute == 0 and (minute_angle % 360) > 354 else 0  # редкий случай близко к 360°
-
-        # --- 4) Часы из формулы: hour_angle ≈ 30·H + 0.5·M ---
-        # Используем уже округлённые минуты, чтобы согласовать обе стрелки.
-        # Получим целые часы, затем нормализуем в 0..11.
-        hour_raw = (hour_angle - 0.5 * minute) / 30.0
-        hour = int(round(hour_raw)) % 12
-
-        # Перенос часа, если минутная «перекатилась» через 12 при округлении.
-        hour = (hour + minute_carry) % 12
-
-        # --- 5) Сохраняем всё в объект ---
-        self.minute_angle = minute_angle
-        self.hour_angle = hour_angle
-        self.minute = minute
-        self.hour = hour
-
-        # --- 6) Сообщение пользователю ---
-        msg = (
-            f"Часовая стрелка:\n"
-            f"  Угол = {self.hour_angle:.1f}°\n"
-            f"  Часы = {self.hour}\n\n"
-            f"Минутная стрелка:\n"
-            f"  Угол = {self.minute_angle:.1f}°\n"
-            f"  Минуты = {self.minute:02d}"
-        )
-        messagebox.showinfo("Вычисленные углы и время", msg)
-        print(msg)
-        self.show_intermediate(self.result, "Вычислены углы стрелок")
-
+            msg = (
+                f"Часовая стрелка:\n"
+                f"  Угол = {self.hour_angle:.1f}°\n"
+                f"  Часы = {display_hour}\n\n"
+                f"Минутная стрелка:\n"
+                f"  Угол = {self.minute_angle:.1f}°\n"
+                f"  Минуты = {self.minute:02d}\n\n"
+                f"Ошибка А={Error_A:.2f}, Ошибка B={Error_B:.2f} (Выбрана {'A' if Error_A <= Error_B else 'B'})"
+            )
+            messagebox.showinfo("Вычисленные углы и время", msg)
+            print(msg)
+            self.show_intermediate(self.result, f"Вычислены углы стрелок. Время: {display_hour:02d}:{self.minute:02d}")
 
 
     def display_time(self):
